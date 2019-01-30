@@ -13,6 +13,14 @@ export DEFAULT_PRODUCT_LICENSE
 export PLATFORM
 export BUILDTIME
 
+DOCKER_BUILD_DEBS=$(shell find deb -type d | grep ".*-.*" | sed 's/^deb\///')
+ifeq (${ARCH}, ppc64le)
+DOCKER_BUILD_DEBS="ubuntu-xenial ubuntu-bionic"
+endif
+
+#nothing power-specific required here
+DOCKER_BUILD_RPMS=$(shell find rpm -type d | grep ".*-.*" | sed 's/^rpm\///')
+
 # Taken from: https://www.cmcrossroads.com/article/printing-value-makefile-variable
 print-%  : ; @echo $($*)
 
@@ -36,31 +44,34 @@ clean: clean-image ## remove build artifacts
 	$(MAKE) -C static clean
 
 .PHONY: rpm
-rpm: DOCKER_BUILD_PKGS:=$(shell find rpm -type d | grep ".*-.*" | sed 's/^rpm\///')
 rpm: ## build rpm packages
-	for p in $(DOCKER_BUILD_PKGS); do \
+	for p in $(DOCKER_BUILD_RPMS); do \
 		$(MAKE) -C $@ VERSION=$(VERSION) ENGINE_DIR=$(ENGINE_DIR) CLI_DIR=$(CLI_DIR) GO_VERSION=$(GO_VERSION) $${p}; \
 	done
 
 .PHONY: deb
-deb: DOCKER_BUILD_PKGS:=$(shell find deb -type d | grep ".*-.*" | sed 's/^deb\///')
-deb: ## build deb packages
-	for p in $(DOCKER_BUILD_PKGS); do \
+#deb: DOCKER_BUILD_PKGS=$(shell find deb -type d | grep ".*-.*" | sed 's/^deb\///') 
+#ifeq ($(ARCH), 'ppc64el')
+#	DOCKER_BUILD_PKGS='ubuntu-xenial'
+#endif
+deb: ## build debian packages
+	for p in $(DOCKER_BUILD_DEBS); do \
 		$(MAKE) -C $@ VERSION=$(VERSION) ENGINE_DIR=$(ENGINE_DIR) CLI_DIR=$(CLI_DIR) GO_VERSION=$(GO_VERSION) $${p}; \
 	done
 
 .PHONY: static
-static: DOCKER_BUILD_PKGS:=static-linux cross-mac cross-win cross-arm
+static: DOCKER_BUILD_BINS:=static-linux cross-mac cross-win cross-arm
 static: ## build static-compiled packages
-	for p in $(DOCKER_BUILD_PKGS); do \
+	for p in $(DOCKER_BUILD_BINS); do \
 		$(MAKE) -C $@ VERSION=$(VERSION) ENGINE_DIR=$(ENGINE_DIR) CLI_DIR=$(CLI_DIR) GO_VERSION=$(GO_VERSION) $${p}; \
 	done
 
 # TODO - figure out multi-arch
+# christy
 .PHONY: image
-image: DOCKER_BUILD_PKGS:=image-linux
+image: DOCKER_BUILD_IMGS:=image-linux
 image: ## build static-compiled packages
-	for p in $(DOCKER_BUILD_PKGS); do \
+	for p in $(DOCKER_BUILD_IMGS); do \
 		$(MAKE) -C $@ VERSION=$(VERSION) ENGINE_DIR=$(ENGINE_DIR) CLI_DIR=$(CLI_DIR) GO_VERSION=$(GO_VERSION) $${p}; \
 	done
 
