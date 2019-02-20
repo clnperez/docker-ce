@@ -40,6 +40,12 @@ enum sync_t {
 	SYNC_ERR = 0xFF, /* Fatal error, no turning back. The error code follows. */
 };
 
+/*
+ * Synchronisation value for cgroup namespace setup.
+ * The same constant is defined in process_linux.go as "createCgroupns".
+ */
+#define CREATECGROUPNS 0x80
+
 /* longjmp() arguments. */
 #define JUMP_PARENT 0x00
 #define JUMP_CHILD  0xA0
@@ -432,6 +438,9 @@ void join_namespaces(char *nslist)
 	free(namespaces);
 }
 
+/* Defined in cloned_binary.c. */
+int ensure_cloned_binary(void);
+
 void nsexec(void)
 {
 	int pipenum;
@@ -446,6 +455,14 @@ void nsexec(void)
 	pipenum = initpipe();
 	if (pipenum == -1)
 		return;
+
+	/*
+	 * We need to re-exec if we are not in a cloned binary. This is necessary
+	 * to ensure that containers won't be able to access the host binary
+	 * through /proc/self/exe. See CVE-2019-5736.
+	 */
+	if (ensure_cloned_binary() < 0)
+		bail("could not ensure we are a cloned binary");
 
 	/* Parse all of the netlink configuration. */
 	nl_parse(pipenum, &config);
@@ -622,6 +639,17 @@ void nsexec(void)
 							kill(child, SIGKILL);
 							bail("failed to sync with child: write(SYNC_RECVPID_ACK)");
 						}
+
+						/* Send the init_func pid back to our parent. */
+						len = snprintf(buf, JSON_MAX, "{\"pid\": %d}\n", child);
+						if (len < 0) {
+							kill(child, SIGKILL);
+							bail("unable to generate JSON for child pid");
+						}
+						if (write(pipenum, buf, len) != len) {
+							kill(child, SIGKILL);
+							bail("unable to send child pid to bootstrapper");
+						}
 					}
 					break;
 				case SYNC_CHILD_READY:
@@ -665,18 +693,6 @@ void nsexec(void)
 					bail("unexpected sync value: %u", s);
 				}
 			}
-
-			/* Send the init_func pid back to our parent. */
-			len = snprintf(buf, JSON_MAX, "{\"pid\": %d}\n", child);
-			if (len < 0) {
-				kill(child, SIGKILL);
-				bail("unable to generate JSON for child pid");
-			}
-			if (write(pipenum, buf, len) != len) {
-				kill(child, SIGKILL);
-				bail("unable to send child pid to bootstrapper");
-			}
-
 			exit(0);
 		}
 
@@ -719,7 +735,7 @@ void nsexec(void)
 			 * some old kernel versions where clone(CLONE_PARENT | CLONE_NEWPID)
 			 * was broken, so we'll just do it the long way anyway.
 			 */
-			if (unshare(config.cloneflags) < 0)
+			if (unshare(config.cloneflags & ~CLONE_NEWCGROUP) < 0)
 				bail("failed to unshare namespaces");
 
 			/*
@@ -754,7 +770,6 @@ void nsexec(void)
 						bail("failed to set process as dumpable");
 				}
 			}
-
 			/*
 			 * TODO: What about non-namespace clone flags that we're dropping here?
 			 *
@@ -839,6 +854,18 @@ void nsexec(void)
 			if (!config.is_rootless && config.is_setgroup) {
 				if (setgroups(0, NULL) < 0)
 					bail("setgroups failed");
+			}
+
+			/* ... wait until our topmost parent has finished cgroup setup in p.manager.Apply() ... */
+			if (config.cloneflags & CLONE_NEWCGROUP) {
+				uint8_t value;
+				if (read(pipenum, &value, sizeof(value)) != sizeof(value))
+					bail("read synchronisation value failed");
+				if (value == CREATECGROUPNS) {
+					if (unshare(CLONE_NEWCGROUP) < 0)
+						bail("failed to unshare cgroup namespace");
+				} else
+					bail("received unknown synchronisation value");
 			}
 
 			s = SYNC_CHILD_READY;
